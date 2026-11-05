@@ -15,64 +15,43 @@ internal static class SelfTest
         try
         {
             var store = new Storage(root, desktops);
-            if (store.Config.Boxes.Count == 0) store.Config.Boxes.Add(new Box());
-            var box = store.Config.Boxes[0];
-            string path = Path.Combine(desktops[0], "原始文件 — 完整名称.md");
-            File.WriteAllText(path, "unchanged content");
-            var original = File.GetAttributes(path);
-            var created = File.GetCreationTimeUtc(path); var modified = File.GetLastWriteTimeUtc(path);
+            var box = new Box();
+            var other = new Box();
+            store.Config.Boxes.AddRange(new[] { box, other });
+            string path = Path.Combine(desktops[0], "Notes.md");
+            File.WriteAllText(path, "# Original");
+            var attributes = File.GetAttributes(path);
             store.Add(box, path);
-            string stored = store.ItemPath(path);
-            Check(!File.Exists(path) && File.ReadAllText(stored) == "unchanged content", "collection removes desktop icon and keeps content");
-            Check(File.GetAttributes(stored) == original && (File.GetAttributes(Path.GetDirectoryName(stored)!) & Storage.Mask) == 0,
-                "managed folder is visible and the file keeps its original attributes");
-            Check(File.GetCreationTimeUtc(stored) == created && File.GetLastWriteTimeUtc(stored) == modified, "creation and modification dates unchanged");
-            store.Add(box, path); Check(box.Paths.Count(p => p == path) == 1, "duplicate collection rejected");
-            var second = new Storage(root, desktops);
-            Check(second.Journal.Count == 1 && second.Config.Boxes[0].Paths.Contains(path), "membership and recovery journal persisted");
-            File.WriteAllText(stored, "# Overwrite");
-            string replacement = stored + ".tmp";
+            Check(store.ItemPath(path) == path && File.GetAttributes(path) == attributes &&
+                !Directory.EnumerateDirectories(desktops[0]).Any(), "collection preserves path and attributes without creating a directory");
+            File.WriteAllText(path, "# Overwrite");
+            string replacement = path + ".tmp";
             File.WriteAllText(replacement, "# Atomic save");
-            File.Replace(replacement, stored, null);
-            store.RefreshStoredPaths();
-            string renamed = Path.Combine(Path.GetDirectoryName(stored)!, "重命名后的文件.md");
-            File.Move(stored, renamed);
-            store.RefreshStoredPaths();
-            var target = new Box();
-            store.Config.Boxes.Add(target);
-            store.Transfer(box, target, new[] { renamed });
-            Check(box.Paths.Count == 0 && target.Paths.Contains(path), "edited and renamed file transfers using its current path");
-            string restored = Path.Combine(desktops[0], Path.GetFileName(renamed));
-            File.WriteAllText(restored, "conflicting file");
-            Check(store.CloseBox(target).Count == 0 && File.ReadAllText(restored) == "conflicting file" &&
-                File.ReadAllText(target.Paths.Single()) == "# Atomic save", "close restores the saved file under a distinct name when necessary");
-            store.ReopenBox(target);
-            Check(File.ReadAllText(store.ItemPath(target.Paths.Single())) == "# Atomic save", "reopen collects the restored file");
+            File.Replace(replacement, path, null);
+            store.Transfer(box, other, new[] { path });
+            Check(box.Paths.Count == 0 && other.Paths.Contains(path), "transfer changes membership only");
+            Check(store.CloseBox(other).Count == 0 && File.ReadAllText(path) == "# Atomic save", "closing preserves desktop file");
+            store.ReopenBox(other);
+            Check(other.Paths.Contains(path), "reopening retains membership");
+            store.Remove(other, path);
+            Check(other.Paths.Count == 0 && File.Exists(path), "removing membership preserves desktop file");
 
-            string legacy = Path.Combine(desktops[0], "旧版.md");
-            File.WriteAllText(legacy, "# Legacy");
-            store.Journal.Add(new RecoveryItem { Path = legacy, Identity = Native.Identity(legacy) });
+            string managed = Path.Combine(desktops[0], "legacy-managed");
+            Directory.CreateDirectory(managed);
+            string original = Path.Combine(desktops[0], "Migrated.md");
+            string stored = Path.Combine(managed, "Migrated.md");
+            File.WriteAllText(stored, "# Migrated");
+            box.Paths.Add(original);
+            store.Save();
+            store.Journal.Add(new RecoveryItem { Path = original, StoredPath = stored, Identity = Native.Identity(stored) });
             store.Write("recovery.json", store.Journal);
-            File.SetAttributes(legacy, File.GetAttributes(legacy) | Storage.Mask);
-            bool oldSaveFailed = false;
-            try { File.WriteAllText(legacy, "# Save"); } catch (UnauthorizedAccessException) { oldSaveFailed = true; }
-            Check(oldSaveFailed, "reproduced legacy overwrite failure");
-            Check(store.RestoreAll(keepCollected: true).Count == 0, "legacy journal restored before migration");
-            store.Add(box, legacy);
-            File.WriteAllText(store.ItemPath(legacy), "# Migrated");
-            Check(File.ReadAllText(store.ItemPath(legacy)) == "# Migrated", "legacy Markdown is writable after migration");
+            Check(store.RestoreAll().Count == 0 && File.ReadAllText(original) == "# Migrated" &&
+                !File.Exists(stored) && box.Paths.Contains(original), "old managed file returns to its original path with membership");
 
-            string newFile = store.CreateItem(box, "新建 Markdown 文件.md", directory: false);
-            string newFolder = store.CreateItem(box, "新建文件夹", directory: true);
-            File.WriteAllText(newFile, "# New file");
-            File.WriteAllText(Path.Combine(newFolder, "子文件.txt"), "directory content");
-            store.RefreshStoredPaths();
-            Check(store.RestoreAll().Count == 0 && File.ReadAllText(Path.Combine(desktops[0], Path.GetFileName(newFile))) == "# New file" &&
-                File.Exists(Path.Combine(desktops[0], Path.GetFileName(newFolder), "子文件.txt")), "new files and folders restore with their contents");
-
-            string outside = Path.Combine(root, "outside.txt"); File.WriteAllText(outside, "outside");
-            bool rejected = false; try { store.Add(box, outside); } catch (IOException) { rejected = true; }
-            Check(rejected && File.ReadAllText(outside) == "outside", "outside-desktop file not moved or collected");
+            string created = store.CreateItem(box, "New.md", directory: false);
+            string folder = store.CreateItem(box, "New folder", directory: true);
+            Check(created == Path.Combine(desktops[0], "New.md") && File.Exists(created) &&
+                folder == Path.Combine(desktops[0], "New folder") && Directory.Exists(folder), "new items are created at normal desktop paths");
             lines.Add("ALL PASSED");
         }
         catch (Exception ex) { lines.Add("FAIL " + ex); Environment.ExitCode = 1; }

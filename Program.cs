@@ -14,7 +14,7 @@ namespace SwordBox;
 internal static class Program
 {
     public const string Product = "辛普莱特的万剑匣";
-    public const string Version = "1.8.2";
+    public const string Version = "1.8.3";
     private const string MenuKey = @"Software\Classes\DesktopBackground\Shell\Symplatt.SwordBox";
     private const string LegacyMenuKey = @"Software\Classes\DesktopBackground\Shell\Simplicit.SwordBox";
     private const string OldMenuKey = @"Software\Classes\Directory\Background\shell\Simplicit.SwordBox";
@@ -54,7 +54,7 @@ internal static class Program
             using var guardLock = new Mutex(false, mutexName);
             if (Acquire(guardLock, 5000))
             {
-                try { new Storage(root, desktops).RestoreAll(); } catch (Exception ex) { Log(root, ex); }
+                try { new Storage(root, desktops).RestoreAll(); if (sandbox == null) new DesktopIcons().Restore(); } catch (Exception ex) { Log(root, ex); }
                 finally { guardLock.ReleaseMutex(); }
             }
             return;
@@ -87,7 +87,7 @@ internal static class Program
         try
         {
             var store = new Storage(root, desktops);
-            var errors = store.RestoreAll(keepCollected: true);
+            var errors = store.RestoreAll();
             if (errors.Count > 0) throw new IOException(string.Join("\n", errors));
             if (args.Contains("--demo")) SeedDemo(store);
             if (store.Config.Boxes.Count == 0 && !newBox && !startup && !openSettings && !args.Contains("--observe-desktop")) store.Config.Boxes.Add(store.CreateBox());

@@ -23,6 +23,7 @@ public sealed class DesktopManager : ApplicationContext
     private readonly List<DesktopBox> boxes = new();
     private readonly List<FileSystemWatcher> watchers = new();
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
+    private readonly DesktopIcons desktopIcons = new();
     private readonly Control dispatch = new();
     private NotifyIcon? tray;
     private ContextMenuStrip? trayMenu;
@@ -50,9 +51,6 @@ public sealed class DesktopManager : ApplicationContext
     {
         _ = dispatch.Handle;
         foregroundHook = Native.WatchForeground(foregroundChanged);
-        foreach (var box in Store.Config.Boxes)
-            foreach (var path in box.Paths.ToArray().Where(path => File.Exists(Store.ItemPath(path)) || Directory.Exists(Store.ItemPath(path))))
-                try { Store.StoreItem(path); } catch (Exception ex) { Error(Path.GetFileName(path) + "：" + ex.Message); }
         foreach (var box in Store.Config.Boxes.ToArray()) ShowBox(box);
         if (createInitially) NewBox();
         trayIcon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
@@ -122,7 +120,7 @@ public sealed class DesktopManager : ApplicationContext
     private void RefreshDesktopBoxes(bool force)
     {
         if (Native.DesktopHost() == IntPtr.Zero) return;
-        Store.RefreshStoredPaths();
+        if (allowStartupChanges) desktopIcons.Sync(Store.Config.Boxes.SelectMany(box => box.Paths));
         foreach (var box in boxes.ToArray())
         {
             if (box.IsDisposed || !box.IsHandleCreated || !Native.IsWindow(box.Handle))
@@ -273,6 +271,7 @@ public sealed class DesktopManager : ApplicationContext
     {
         if (Stopping) return; Stopping = true; timer.Stop();
         foreach (var box in boxes) box.Persist();
+        if (allowStartupChanges) desktopIcons.Restore();
         var errors = Store.RestoreAll();
         if (errors.Count > 0) Error("恢复记录已保留：\n" + string.Join("\n", errors));
         foreach (var box in boxes) box.Dispose(); boxes.Clear(); tray?.Dispose(); ExitThread();

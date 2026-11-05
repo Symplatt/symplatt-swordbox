@@ -87,7 +87,6 @@ public sealed class Storage
     public List<RecoveryItem> Journal { get; private set; }
     public event Action<string>? Renamed;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
-    private const string ManagedFolder = "万剑匣收纳";
 
     public Storage(string root, string[] desktops)
     {
@@ -158,21 +157,7 @@ public sealed class Storage
         if (conflict != null)
             throw new IOException(Path.GetFileName(conflict) + " 已在另一个收纳盒中，请先从那里移出。");
 
-        var attempted = new List<string>();
-        try
-        {
-            foreach (string path in box.Paths.Where(path => Exists(ItemPath(path))))
-            {
-                attempted.Add(path);
-                StoreItem(path);
-            }
-            MoveBox(box, Config.ClosedBoxes, Config.Boxes);
-        }
-        catch
-        {
-            foreach (string path in attempted) Restore(path);
-            throw;
-        }
+        MoveBox(box, Config.ClosedBoxes, Config.Boxes);
     }
 
     private void MoveBox(Box box, List<Box> source, List<Box> target)
@@ -198,33 +183,16 @@ public sealed class Storage
             {
                 FileAttributes attributes;
                 try { attributes = File.GetAttributes(path); } catch { continue; }
-                if ((attributes & Mask) != 0 || Collected(path) || Path.GetFileName(path) == ManagedFolder) continue;
+                if ((attributes & Mask) != 0 || Collected(path)) continue;
                 yield return path;
             }
         }
-    }
-
-    private string ManagedPath(string path)
-    {
-        string folder = Path.Combine(Path.GetDirectoryName(path)!, ManagedFolder);
-        Directory.CreateDirectory(folder);
-        var attributes = File.GetAttributes(folder);
-        if ((attributes & FileAttributes.ReparsePoint) != 0)
-            throw new IOException("收纳目录被重定向，无法收纳。");
-        return Path.Combine(folder, Path.GetFileName(path));
     }
 
     private static void MoveItem(string from, string to)
     {
         if (Directory.Exists(from)) Directory.Move(from, to);
         else File.Move(from, to);
-    }
-
-    private void AddEntry(RecoveryItem item)
-    {
-        Journal.Add(item);
-        try { SaveJournal(); }
-        catch { Journal.Remove(item); throw; }
     }
 
     private void ForgetEntry(RecoveryItem item)
@@ -234,58 +202,29 @@ public sealed class Storage
         catch { Journal.Add(item); throw; }
     }
 
-    public void StoreItem(string path)
-    {
-        if (FindEntry(path) is { } existing)
-        {
-            if (existing.StoredPath is string stored && Exists(stored)) return;
-            Restore(path);
-            if (FindEntry(path) != null)
-                throw new IOException("仍有未完成的恢复记录：" + path);
-        }
-        if ((File.GetAttributes(path) & Mask) != 0)
-            throw new IOException("该项目原本已隐藏或标记为系统项目，未收纳。");
-        string target = ManagedPath(path);
-        if (Exists(target)) throw new IOException("收纳目录已有同名项目：" + Path.GetFileName(target));
-        var entry = new RecoveryItem { Path = path, StoredPath = target, Identity = Native.Identity(path) };
-        AddEntry(entry);
-        try { MoveItem(path, target); }
-        catch { ForgetEntry(entry); throw; }
-    }
-
     public string CreateItem(Box box, string name, bool directory)
     {
         name = name.Trim();
         if (name.Length == 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.EndsWith('.') ||
-            string.Equals(name, ManagedFolder, StringComparison.OrdinalIgnoreCase) ||
             Regex.IsMatch(name.Split('.', 2)[0].TrimEnd(), @"^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
             throw new IOException("请输入有效的文件或文件夹名称。");
         string path = Path.Combine(Desktops[0], name);
         if (Tracks(path) || FindEntry(path) != null || Exists(path))
             throw new IOException("桌面或收纳盒中已有同名项目。");
-        string target = ManagedPath(path);
-        if (Exists(target)) throw new IOException("收纳目录已有同名项目。");
-        var entry = new RecoveryItem { Path = path, StoredPath = target };
-        AddEntry(entry);
-        try
-        {
-            if (directory) Directory.CreateDirectory(target);
-            else using (File.Open(target, FileMode.CreateNew, FileAccess.Write)) { }
-        }
-        catch { ForgetEntry(entry); throw; }
+        if (directory) Directory.CreateDirectory(path);
+        else using (File.Open(path, FileMode.CreateNew, FileAccess.Write)) { }
         AddMembership(box, path);
-        return target;
+        return path;
     }
 
     public void Add(Box box, string path)
     {
         path = System.IO.Path.GetFullPath(path);
         if (!IsDesktop(path)) throw new IOException("只能收纳直接位于桌面的文件或文件夹。请先将文件放到桌面。");
-        if (string.Equals(Path.GetFileName(path), ManagedFolder, StringComparison.OrdinalIgnoreCase))
-            throw new IOException("无法收纳收纳目录。");
         if (Collected(path)) return;
-        StoreItem(path);
+        if ((File.GetAttributes(path) & Mask) != 0)
+            throw new IOException("该项目原本已隐藏或标记为系统项目，未收纳。");
         AddMembership(box, path);
     }
 
@@ -293,7 +232,7 @@ public sealed class Storage
     {
         box.Paths.Add(path);
         try { SaveEditedBox(box); }
-        catch { box.Paths.Remove(path); Restore(path); throw; }
+        catch { box.Paths.Remove(path); throw; }
     }
 
     public void Remove(Box box, string path)
@@ -309,7 +248,6 @@ public sealed class Storage
         catch
         {
             box.Paths.Insert(index, path);
-            if (Exists(path)) StoreItem(path);
             throw;
         }
     }
@@ -435,39 +373,11 @@ public sealed class Storage
         return path;
     }
 
-    public void RefreshStoredPaths()
-    {
-        var changes = new List<(RecoveryItem Item, string? StoredPath, string Identity)>();
-        foreach (var item in Journal.Where(item => item.StoredPath != null))
-        {
-            string? actual = ResolveStored(item);
-            if (actual == null) continue;
-            string identity = Native.Identity(actual);
-            if (identity.Length == 0 || item.StoredPath == actual && item.Identity == identity) continue;
-            changes.Add((item, item.StoredPath, item.Identity));
-            item.StoredPath = actual;
-            item.Identity = identity;
-        }
-        if (changes.Count == 0) return;
-        try { SaveJournal(); }
-        catch
-        {
-            foreach (var change in changes)
-            {
-                change.Item.StoredPath = change.StoredPath;
-                change.Item.Identity = change.Identity;
-            }
-            throw;
-        }
-    }
-
-    public List<string> RestoreAll(bool keepCollected = false)
+    public List<string> RestoreAll()
     {
         var errors = new List<string>();
         foreach (var item in Journal.ToArray())
         {
-            if (keepCollected && item.StoredPath != null && Collected(item.Path) &&
-                string.Equals(Path.GetFileName(Path.GetDirectoryName(item.StoredPath)), ManagedFolder, StringComparison.OrdinalIgnoreCase)) continue;
             try { Restore(item.Path); }
             catch (Exception ex) { errors.Add(System.IO.Path.GetFileName(item.Path) + "：" + ex.Message); }
         }
