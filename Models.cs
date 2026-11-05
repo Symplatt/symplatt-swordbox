@@ -202,14 +202,30 @@ public sealed class Storage
         catch { Journal.Add(item); throw; }
     }
 
-    public string CreateItem(Box box, string name, bool directory)
+    private static string ValidateName(string name)
     {
         name = name.Trim();
         if (name.Length == 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.EndsWith('.') ||
             Regex.IsMatch(name.Split('.', 2)[0].TrimEnd(), @"^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
             throw new IOException("请输入有效的文件或文件夹名称。");
-        string path = Path.Combine(Desktops[0], name);
+        return name;
+    }
+
+    public string RenameItem(string path, string name)
+    {
+        string target = Path.Combine(Path.GetDirectoryName(path)!, ValidateName(name));
+        if (target == path) return path;
+        if (!string.Equals(path, target, StringComparison.OrdinalIgnoreCase) && (Exists(target) || Tracks(target)))
+            throw new IOException("已有同名项目。");
+        MoveItem(path, target);
+        TrackRename(path, target);
+        return target;
+    }
+
+    public string CreateItem(Box box, string name, bool directory)
+    {
+        string path = Path.Combine(Desktops[0], ValidateName(name));
         if (Tracks(path) || FindEntry(path) != null || Exists(path))
             throw new IOException("桌面或收纳盒中已有同名项目。");
         if (directory) Directory.CreateDirectory(path);

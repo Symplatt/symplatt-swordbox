@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using Microsoft.VisualBasic.FileIO;
 
 namespace SwordBox;
 
@@ -146,7 +147,7 @@ public sealed class DesktopBox : Form
             };
         }
         KeyPreview = true;
-        KeyDown += (_, e) => { if (e.KeyCode == Keys.F2) Rename(); if (e.KeyCode == Keys.F5) RefreshFiles(true); };
+        KeyDown += (_, e) => { if (e.KeyCode == Keys.F5) RefreshFiles(true); };
         if (manager.Verification) ApplyOpacity();
         Disposed += (_, _) => { resizeTimer.Dispose(); resizeOutline?.Dispose(); newMenu.Dispose(); fileMenu.Dispose(); boxMenu?.Dispose(); };
     }
@@ -213,11 +214,12 @@ public sealed class DesktopBox : Form
         Files.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) grid.OpenItem(e.RowIndex); };
         grid.DropFiles += point => manager.DropFiles(this, Selected().Select(file => file.Path).ToArray(), point);
         Files.CellMouseDown += (_, e) => { if (e.RowIndex >= 0 && e.Button == MouseButtons.Right && !Files.Rows[e.RowIndex].Selected) { Files.ClearSelection(); Files.Rows[e.RowIndex].Selected = true; } };
-        Files.KeyDown += (_, e) => { if (e.KeyCode == Keys.Delete) { RemoveSelected(); e.Handled = true; } if (e.KeyCode == Keys.Enter) { OpenSelected(); e.Handled = true; } };
+        Files.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { OpenSelected(); e.Handled = true; } };
         fileMenu.Items.Add("打开", null, (_, _) => OpenSelected());
         fileMenu.Items.Add("在资源管理器中定位", null, (_, _) => { if (Selected().FirstOrDefault() is DesktopFile f) Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + f.Path + "\"") { UseShellExecute = true }); });
         fileMenu.Items.Add("复制文件路径", null, (_, _) => { var paths = Selected().Select(f => f.Path).ToArray(); if (paths.Length > 0) Clipboard.SetText(string.Join(Environment.NewLine, paths)); });
         fileMenu.Items.Add(new ToolStripSeparator()); fileMenu.Items.Add("移出收纳", null, (_, _) => RemoveSelected());
+        fileMenu.Items.Add(new ToolStripMenuItem("删除", null, (_, _) => DeleteSelected()) { ShortcutKeyDisplayString = "Delete" });
         fileMenu.Opening += (_, e) => { if (!Selected().Any()) e.Cancel = true; };
         Files.MouseDown += (_, _) => Native.SetFocus(Files.Handle);
     }
@@ -265,6 +267,40 @@ public sealed class DesktopBox : Form
         manager.RefreshAll();
         if (errors.Count > 0) manager.Error(string.Join("\n", errors));
     }
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (Files.ContainsFocus)
+        {
+            if (keyData == Keys.Delete) { DeleteSelected(); return true; }
+            if (keyData == Keys.F2)
+            {
+                var files = Selected().ToArray();
+                if (files.Length == 1) EditItemName("重命名", "确定", files[0].Name, files[0].IsFolder,
+                    name => manager.Store.RenameItem(files[0].Path, name));
+                return true;
+            }
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private void DeleteSelected()
+    {
+        var errors = new List<string>();
+        foreach (var file in Selected().ToArray())
+        {
+            try
+            {
+                if (file.IsFolder) FileSystem.DeleteDirectory(file.Path, UIOption.AllDialogs, RecycleOption.SendToRecycleBin);
+                else FileSystem.DeleteFile(file.Path, UIOption.AllDialogs, RecycleOption.SendToRecycleBin);
+                manager.Store.Remove(Box, file.Path);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex) { errors.Add(file.Name + "：" + ex.Message); }
+        }
+        manager.RefreshAll();
+        if (errors.Count > 0) manager.Error(string.Join("\n", errors));
+    }
+
     private void OpenSelected()
     {
         if (Selected().FirstOrDefault() is DesktopFile file) OpenFile(file);
@@ -280,11 +316,14 @@ public sealed class DesktopBox : Form
         if (picker.ShowDialog(this) == DialogResult.OK) Collect(picker.Chosen);
     }
     private readonly ContextMenuStrip newMenu = new();
-    private void CreateItem(string name, bool directory = false)
+    private void CreateItem(string name, bool directory = false) =>
+        EditItemName("新建", "新建", name, directory, value => manager.Store.CreateItem(Box, value, directory));
+
+    private void EditItemName(string caption, string action, string name, bool directory, Func<string, string> apply)
     {
-        using var dialog = new Form { Text = "新建", ClientSize = new Size(342, 104), FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent, Font = Font };
+        using var dialog = new Form { Text = caption, ClientSize = new Size(342, 104), FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent, Font = Font };
         var input = new TextBox { Text = name, Bounds = new Rectangle(16, 16, 310, 28), MaxLength = 255, AccessibleName = "名称" };
-        var save = new Button { Text = "新建", DialogResult = DialogResult.OK, Bounds = new Rectangle(162, 58, 78, 28) };
+        var save = new Button { Text = action, DialogResult = DialogResult.OK, Bounds = new Rectangle(162, 58, 78, 28) };
         var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(248, 58, 78, 28) };
         dialog.Controls.AddRange(new Control[] { input, save, cancel });
         dialog.AcceptButton = save; dialog.CancelButton = cancel;
@@ -293,7 +332,7 @@ public sealed class DesktopBox : Form
         {
             try
             {
-                string path = manager.Store.CreateItem(Box, input.Text, directory);
+                string path = apply(input.Text);
                 manager.RefreshAll();
                 Files.ClearSelection();
                 foreach (DataGridViewRow row in Files.Rows)

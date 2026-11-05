@@ -52,6 +52,9 @@ internal static class SelfTest
             string folder = store.CreateItem(box, "New folder", directory: true);
             Check(created == Path.Combine(desktops[0], "New.md") && File.Exists(created) &&
                 folder == Path.Combine(desktops[0], "New folder") && Directory.Exists(folder), "new items are created at normal desktop paths");
+            string renamed = store.RenameItem(created, "Renamed.md");
+            Check(!File.Exists(created) && File.Exists(renamed) && box.Paths.Contains(renamed),
+                "renaming updates the file and collection membership");
             lines.Add("ALL PASSED");
         }
         catch (Exception ex) { lines.Add("FAIL " + ex); Environment.ExitCode = 1; }
