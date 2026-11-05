@@ -24,8 +24,8 @@ internal static class SelfTest
             store.Add(box, path);
             string stored = store.ItemPath(path);
             Check(!File.Exists(path) && File.ReadAllText(stored) == "unchanged content", "collection removes desktop icon and keeps content");
-            Check(File.GetAttributes(stored) == original && (File.GetAttributes(Path.GetDirectoryName(stored)!) & Storage.Mask) == Storage.Mask,
-                "only the managed folder has hidden and system bits");
+            Check(File.GetAttributes(stored) == original && (File.GetAttributes(Path.GetDirectoryName(stored)!) & Storage.Mask) == 0,
+                "managed folder is visible and the file keeps its original attributes");
             Check(File.GetCreationTimeUtc(stored) == created && File.GetLastWriteTimeUtc(stored) == modified, "creation and modification dates unchanged");
             store.Add(box, path); Check(box.Paths.Count(p => p == path) == 1, "duplicate collection rejected");
             var second = new Storage(root, desktops);

@@ -14,7 +14,7 @@ namespace SwordBox;
 internal static class Program
 {
     public const string Product = "辛普莱特的万剑匣";
-    public const string Version = "1.8.1";
+    public const string Version = "1.8.2";
     private const string MenuKey = @"Software\Classes\DesktopBackground\Shell\Symplatt.SwordBox";
     private const string LegacyMenuKey = @"Software\Classes\DesktopBackground\Shell\Simplicit.SwordBox";
     private const string OldMenuKey = @"Software\Classes\Directory\Background\shell\Simplicit.SwordBox";

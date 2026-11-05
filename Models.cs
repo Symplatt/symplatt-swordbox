@@ -4,8 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Drawing;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.RegularExpressions;
 
 namespace SwordBox;
@@ -89,14 +87,12 @@ public sealed class Storage
     public List<RecoveryItem> Journal { get; private set; }
     public event Action<string>? Renamed;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
-    private readonly string managedFolder;
+    private const string ManagedFolder = "万剑匣收纳";
 
     public Storage(string root, string[] desktops)
     {
         Root = root;
         Desktops = desktops;
-        managedFolder = ".SwordBox-" + Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToUpperInvariant())))[..12];
         Directory.CreateDirectory(root);
         Config = Read<Configuration>("settings.json") ?? new Configuration();
         Journal = Read<List<RecoveryItem>>("recovery.json") ?? new();
@@ -202,7 +198,7 @@ public sealed class Storage
             {
                 FileAttributes attributes;
                 try { attributes = File.GetAttributes(path); } catch { continue; }
-                if ((attributes & Mask) != 0 || Collected(path) || Path.GetFileName(path) == managedFolder) continue;
+                if ((attributes & Mask) != 0 || Collected(path) || Path.GetFileName(path) == ManagedFolder) continue;
                 yield return path;
             }
         }
@@ -210,16 +206,11 @@ public sealed class Storage
 
     private string ManagedPath(string path)
     {
-        string folder = Path.Combine(Path.GetDirectoryName(path)!, managedFolder);
+        string folder = Path.Combine(Path.GetDirectoryName(path)!, ManagedFolder);
         Directory.CreateDirectory(folder);
         var attributes = File.GetAttributes(folder);
         if ((attributes & FileAttributes.ReparsePoint) != 0)
             throw new IOException("收纳目录被重定向，无法收纳。");
-        if ((attributes & Mask) != Mask)
-        {
-            File.SetAttributes(folder, attributes | Mask);
-            Native.NotifyDesktopVisibility(folder, directory: true, visible: false);
-        }
         return Path.Combine(folder, Path.GetFileName(path));
     }
 
@@ -266,7 +257,7 @@ public sealed class Storage
     {
         name = name.Trim();
         if (name.Length == 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.EndsWith('.') ||
-            string.Equals(name, managedFolder, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, ManagedFolder, StringComparison.OrdinalIgnoreCase) ||
             Regex.IsMatch(name.Split('.', 2)[0].TrimEnd(), @"^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
             throw new IOException("请输入有效的文件或文件夹名称。");
@@ -291,7 +282,7 @@ public sealed class Storage
     {
         path = System.IO.Path.GetFullPath(path);
         if (!IsDesktop(path)) throw new IOException("只能收纳直接位于桌面的文件或文件夹。请先将文件放到桌面。");
-        if (string.Equals(Path.GetFileName(path), managedFolder, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(Path.GetFileName(path), ManagedFolder, StringComparison.OrdinalIgnoreCase))
             throw new IOException("无法收纳收纳目录。");
         if (Collected(path)) return;
         StoreItem(path);
@@ -475,7 +466,8 @@ public sealed class Storage
         var errors = new List<string>();
         foreach (var item in Journal.ToArray())
         {
-            if (keepCollected && item.StoredPath != null && Collected(item.Path)) continue;
+            if (keepCollected && item.StoredPath != null && Collected(item.Path) &&
+                string.Equals(Path.GetFileName(Path.GetDirectoryName(item.StoredPath)), ManagedFolder, StringComparison.OrdinalIgnoreCase)) continue;
             try { Restore(item.Path); }
             catch (Exception ex) { errors.Add(System.IO.Path.GetFileName(item.Path) + "：" + ex.Message); }
         }
